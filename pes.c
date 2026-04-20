@@ -9,95 +9,83 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-// ─── PROVIDED: Command Implementations ──────────────────────────────────────
+// ─── TODO: Command implementations ──────────────────────────────────────────
 
-// Usage: pes init
 void cmd_init(void) {
-    if (mkdir(PES_DIR, 0755) != 0 && access(PES_DIR, F_OK) != 0) {
-        fprintf(stderr, "error: failed to create %s\n", PES_DIR);
-        return;
-    }
+    mkdir(PES_DIR, 0755);
     mkdir(OBJECTS_DIR, 0755);
-    mkdir(".pes/refs", 0755);
     mkdir(REFS_DIR, 0755);
-
-    if (access(HEAD_FILE, F_OK) != 0) {
-        FILE *f = fopen(HEAD_FILE, "w");
-        if (f) {
-            fprintf(f, "ref: refs/heads/main\n");
-            fclose(f);
-        }
-    }
-
+    // Create HEAD pointing to main branch
+    FILE *f = fopen(HEAD_FILE, "w");
+    if (f) { fprintf(f, "ref: refs/heads/main\n"); fclose(f); }
     printf("Initialized empty PES repository in %s/\n", PES_DIR);
 }
 
-// Usage: pes add <file>...
 void cmd_add(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: pes add <file>...\n");
         return;
     }
-
-    Index index;
-    if (index_load(&index) != 0) {
+    Index *idx = calloc(1, sizeof(Index));
+    if (!idx) { fprintf(stderr, "error: out of memory\n"); return; }
+    if (index_load(idx) != 0) {
         fprintf(stderr, "error: failed to load index\n");
-        return;
+        free(idx); return;
     }
-
     for (int i = 2; i < argc; i++) {
-        if (index_add(&index, argv[i]) != 0) {
+        if (index_add(idx, argv[i]) != 0) {
             fprintf(stderr, "error: failed to add '%s'\n", argv[i]);
         }
     }
+    free(idx);
 }
 
-// Usage: pes status
 void cmd_status(void) {
-    Index index;
-    if (index_load(&index) != 0) {
-        fprintf(stderr, "error: failed to load index\n");
-        return;
+    Index *idx = calloc(1, sizeof(Index));
+    if (!idx) { fprintf(stderr, "error: out of memory\n"); return; }
+    if (index_load(idx) != 0) {
+        idx->count = 0;
     }
-    index_status(&index);
+    index_status(idx);
+    free(idx);
 }
 
-// Usage: pes commit -m <message>
 void cmd_commit(int argc, char *argv[]) {
-    if (argc < 4 || strcmp(argv[2], "-m") != 0) {
+    const char *message = NULL;
+    for (int i = 2; i < argc - 1; i++) {
+        if (strcmp(argv[i], "-m") == 0) {
+            message = argv[i + 1];
+            break;
+        }
+    }
+    if (!message) {
         fprintf(stderr, "error: commit requires a message (-m \"message\")\n");
         return;
     }
-
-    const char *message = argv[3];
     ObjectID commit_id;
     if (commit_create(message, &commit_id) != 0) {
         fprintf(stderr, "error: commit failed\n");
         return;
     }
-
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(&commit_id, hex);
     printf("Committed: %.12s... %s\n", hex, message);
 }
 
-// Callback for commit_walk used by cmd_log.
-static void print_commit(const ObjectID *id, const Commit *commit, void *ctx) {
+static void log_callback(const ObjectID *id, const Commit *c, void *ctx) {
     (void)ctx;
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(id, hex);
     printf("commit %s\n", hex);
-    printf("Author: %s\n", commit->author);
-    printf("Date:   %llu\n", (unsigned long long)commit->timestamp);
-    printf("\n    %s\n\n", commit->message);
+    printf("Author: %s\n", c->author);
+    printf("Date:   %llu\n\n", (unsigned long long)c->timestamp);
+    printf("    %s\n\n", c->message);
 }
 
-// Usage: pes log
 void cmd_log(void) {
-    if (commit_walk(print_commit, NULL) != 0) {
-        fprintf(stderr, "No commits yet.\n");
+    if (commit_walk(log_callback, NULL) != 0) {
+        printf("No commits yet.\n");
     }
 }
 
