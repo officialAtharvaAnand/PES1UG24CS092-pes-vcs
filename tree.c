@@ -219,28 +219,23 @@ static int write_tree_level(IndexEntry **entries, int count, int depth, ObjectID
 // Build a tree hierarchy from the current index and write all tree
 // objects to the object store.
 int tree_from_index(ObjectID *id_out) {
-    // Load the index
-    Index idx;
-    if (index_load(&idx) != 0) return -1;
-    if (idx.count == 0) {
-        // Empty tree — serialize empty Tree struct
-        Tree empty;
-        empty.count = 0;
-        void *data;
-        size_t len;
-        if (tree_serialize(&empty, &data, &len) != 0) return -1;
+    Index *idx = calloc(1, sizeof(Index));
+    if (!idx) return -1;
+    if (index_load(idx) != 0) { free(idx); return -1; }
+    if (idx->count == 0) {
+        Tree empty; empty.count = 0;
+        void *data; size_t len;
+        if (tree_serialize(&empty, &data, &len) != 0) { free(idx); return -1; }
         int ret = object_write(OBJ_TREE, data, len, id_out);
-        free(data);
+        free(data); free(idx);
         return ret;
     }
-
-    // Build array of pointers (for slicing in recursive calls)
-    IndexEntry **ptrs = malloc(idx.count * sizeof(IndexEntry *));
-    if (!ptrs) return -1;
-    for (int i = 0; i < idx.count; i++)
-        ptrs[i] = &idx.entries[i];
-
-    int ret = write_tree_level(ptrs, idx.count, 0, id_out);
+    IndexEntry **ptrs = malloc(idx->count * sizeof(IndexEntry *));
+    if (!ptrs) { free(idx); return -1; }
+    for (int i = 0; i < idx->count; i++)
+        ptrs[i] = &idx->entries[i];
+    int ret = write_tree_level(ptrs, idx->count, 0, id_out);
     free(ptrs);
+    free(idx);
     return ret;
 }

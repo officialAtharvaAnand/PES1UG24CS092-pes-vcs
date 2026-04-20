@@ -15,6 +15,7 @@
 void cmd_init(void) {
     mkdir(PES_DIR, 0755);
     mkdir(OBJECTS_DIR, 0755);
+    mkdir(".pes/refs", 0755);
     mkdir(REFS_DIR, 0755);
     // Create HEAD pointing to main branch
     FILE *f = fopen(HEAD_FILE, "w");
