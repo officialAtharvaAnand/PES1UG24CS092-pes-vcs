@@ -10,12 +10,17 @@
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
 
 #include "tree.h"
+#include "index.h"
+#include "pes.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
+/* Forward declarations for functions defined in other .c files */
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+int index_load(Index *idx);
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
@@ -129,9 +134,113 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+// ─── TODO: Implement these ──────────────────────────────────────────────────
+
+// Recursive helper: builds a tree from a slice of index entries that all
+// share the same directory prefix at 'depth' levels deep.
+// 'entries' is an array of IndexEntry pointers, 'count' is how many.
+// Returns 0 on success, -1 on error.
+static int write_tree_level(IndexEntry **entries, int count, int depth, ObjectID *id_out) {
+    Tree tree;
+    tree.count = 0;
+
+    int i = 0;
+    while (i < count) {
+        // Get the path component at this depth level
+        const char *path = entries[i]->path;
+
+        // Skip past 'depth' slashes to find the component at this level
+        const char *p = path;
+        for (int d = 0; d < depth; d++) {
+            p = strchr(p, '/');
+            if (!p) return -1;
+            p++; // skip the '/'
+        }
+
+        // Is there another slash after this component? If yes → it's a directory
+        const char *slash = strchr(p, '/');
+
+        if (!slash) {
+            // It's a file at this level — add directly as a blob entry
+            TreeEntry *entry = &tree.entries[tree.count++];
+            entry->mode = entries[i]->mode;
+            strncpy(entry->name, p, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            entry->hash = entries[i]->hash;
+            i++;
+        } else {
+            // It's a subdirectory — collect all entries sharing this prefix
+            size_t dir_len = slash - p;
+            char dir_name[256];
+            strncpy(dir_name, p, dir_len);
+            dir_name[dir_len] = '\0';
+
+            // Find how many consecutive entries share this same subdirectory
+            int j = i;
+            while (j < count) {
+                const char *pp = entries[j]->path;
+                for (int d = 0; d < depth; d++) {
+                    pp = strchr(pp, '/');
+                    if (!pp) break;
+                    pp++;
+                }
+                const char *sl = strchr(pp, '/');
+                if (!sl) break; // file, not in a subdir
+                size_t dl = sl - pp;
+                if (dl != dir_len || strncmp(pp, dir_name, dir_len) != 0) break;
+                j++;
+            }
+
+            // Recursively build the subtree for these entries
+            ObjectID subtree_id;
+            if (write_tree_level(entries + i, j - i, depth + 1, &subtree_id) != 0)
+                return -1;
+
+            // Add the subtree as a directory entry
+            TreeEntry *entry = &tree.entries[tree.count++];
+            entry->mode = 0040000;
+            strncpy(entry->name, dir_name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            entry->hash = subtree_id;
+
+            i = j;
+        }
+    }
+
+    // Serialize and write this tree to the object store
+    void *data;
+    size_t len;
+    if (tree_serialize(&tree, &data, &len) != 0) return -1;
+    int ret = object_write(OBJ_TREE, data, len, id_out);
+    free(data);
+    return ret;
+}
+
+// Build a tree hierarchy from the current index and write all tree
+// objects to the object store.
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    // Load the index
+    Index idx;
+    if (index_load(&idx) != 0) return -1;
+    if (idx.count == 0) {
+        // Empty tree — serialize empty Tree struct
+        Tree empty;
+        empty.count = 0;
+        void *data;
+        size_t len;
+        if (tree_serialize(&empty, &data, &len) != 0) return -1;
+        int ret = object_write(OBJ_TREE, data, len, id_out);
+        free(data);
+        return ret;
+    }
+
+    // Build array of pointers (for slicing in recursive calls)
+    IndexEntry **ptrs = malloc(idx.count * sizeof(IndexEntry *));
+    if (!ptrs) return -1;
+    for (int i = 0; i < idx.count; i++)
+        ptrs[i] = &idx.entries[i];
+
+    int ret = write_tree_level(ptrs, idx.count, 0, id_out);
+    free(ptrs);
+    return ret;
 }
